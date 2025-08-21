@@ -1,0 +1,180 @@
+# def get_ai_response(user_query, prompt_inputs):
+#     # Initialize the vision model
+#     vision_model = ChatGoogleGenerativeAI(
+#         model="gemini-1.5-flash-latest", temperature=0.0, google_api_key=os.getenv("GOOGLE_API_KEY")
+#     )
+
+#     parser = StrOutputParser()
+
+#     # Create messages directly
+#     messages = [
+#         {
+#             "role": "system",
+#             "content": "You are a talented Philatelist you have been assigned to create a collection of stamps for a specific buyers. Answer the user's question using the given image context with direct references to the parts of images provided. Maintain a more conversational tone, don't make too many lists. Use markdown formatting for highlights, emphasis, and structure.",
+#         },
+#         {
+#             "role": "user",
+#             "content": [
+#                 {
+#                     "type": "text",
+#                     "text": f"What are some good ideas for choosing the stamps {prompt_inputs['user_query']}",
+#                 },
+#                 {
+#                     "type": "image_url",
+#                     "image_url": {"url": f"data:image/jpeg;base64,{prompt_inputs['image_data_1']}"},
+#                 },
+#                 {
+#                     "type": "image_url",
+#                     "image_url": {"url": f"data:image/jpeg;base64,{prompt_inputs['image_data_2']}"},
+#                 },
+#             ],
+#         },
+#     ]
+
+#     # AI processing with animated spinner
+#     with st.spinner("Generating AI response..."):
+#         response = vision_model.invoke(messages)
+#         parsed_response = parser.invoke(response)
+
+#     return parsed_response
+
+only 2 images
+
+# def format_prompt_inputs(data, user_query):
+#     with st.spinner("Processing images for AI analysis..."):
+#         inputs = {}
+
+#         inputs["user_query"] = user_query
+
+#         image_path_1 = data["uris"][0][0]
+#         image_path_2 = data["uris"][0][1]
+
+#         with open(image_path_1, "rb") as image_file:
+#             image_data_1 = image_file.read()
+#         inputs["image_data_1"] = base64.b64encode(image_data_1).decode("utf-8")
+
+#         with open(image_path_2, "rb") as image_file:
+#             image_data_2 = image_file.read()
+#         inputs["image_data_2"] = base64.b64encode(image_data_2).decode("utf-8")
+
+
+#     return inputs, image_path_1, image_path_2
+
+
+
+# # Process user query
+# if search_button and query:
+#     # Query processing
+#     results = query_db(query)
+
+#     if len(results["uris"][0]) >= 2:
+#         prompt_inputs, image_path_1, image_path_2 = format_prompt_inputs(results, query)
+
+#         # Generate and display AI response with typing animation effect
+#         response = get_ai_response(query, prompt_inputs)
+
+#         # Create a placeholder for the typing animation
+#         response_container = st.empty()
+
+#         # Simulate typing animation
+#         displayed_text = ""
+#         for i in range(len(response) + 1):
+#             displayed_text = response[:i]
+#             response_container.markdown(
+#                 f"<div class='ai-response'>{displayed_text}</div>", unsafe_allow_html=True
+#             )
+#             time.sleep(0.01)  # Adjust speed of typing animation
+
+#         # Display related images
+#         st.markdown("<h2 class='sub-header'>Relevant Stamps</h2>", unsafe_allow_html=True)
+
+#         # Create two columns for the images with a bit of spacing
+#         col1, col2 = st.columns(2)
+
+#         with col1:
+#             # Container for better styling
+#             with st.container():
+#                 # Process image for display
+#                 img1 = preprocess_image_for_display(image_path_1)
+#                 # Display the image with caption
+#                 st.image(img1, caption="Stamp Sample 1", use_container_width=True)
+
+#         with col2:
+#             # Container for better styling
+#             with st.container():
+#                 # Process image for display
+#                 img2 = preprocess_image_for_display(image_path_2)
+#                 # Display the image with caption
+#                 st.image(img2, caption="Stamp Sample 2", use_container_width=True)
+#     else:
+#         st.error("Not enough relevant images found. Please try a different query.")
+# elif search_button:
+#     st.warning("Please enter a query or use voice search to find stamps.")
+# Process user query
+
+
+if search_button and query:
+    # Query processing
+    results = query_db(query)
+
+    if len(results["uris"][0]) >= 1:
+        # Get prompt inputs and all image paths
+        prompt_inputs, image_paths = format_prompt_inputs(results, query)
+
+        # Generate and display AI response with typing animation effect
+        # response = get_ai_response(query, prompt_inputs)
+
+        # Create a placeholder for the typing animation
+        response_container = st.empty()
+
+        # # Simulate typing animation
+        # displayed_text = ""
+        # for i in range(len(response) + 1):
+        #     displayed_text = response[:i]
+        #     response_container.markdown(
+        #         f"<div class='ai-response'>{displayed_text}</div>", unsafe_allow_html=True
+        #     )
+        #     time.sleep(0.01)  # Adjust speed of typing animation
+
+        # Display related images
+        st.markdown("<h2 class='sub-header'>Relevant Stamps</h2>", unsafe_allow_html=True)
+
+        # Create a grid layout for displaying multiple images
+        cols = st.columns(min(4, len(image_paths)))  # up to 4 images per row
+
+        for i, path in enumerate(image_paths):
+            with cols[i % 4]:  # distribute images across columns
+                with st.container():
+                    img = preprocess_image_for_display(path)
+                    st.image(img, caption=f"Stamp Sample {i+1}", use_container_width=True)
+
+    else:
+        st.error("Not enough relevant images found. Please try a different query.")
+elif search_button:
+    st.warning("Please enter a query or use voice search to find stamps.")
+
+
+
+for more images
+
+# def format_prompt_inputs(data, user_query):
+#     with st.spinner("Processing images for AI analysis..."):
+#         inputs = {}
+#         inputs["user_query"] = user_query
+
+#         # Safely get URIs
+#         image_paths = []
+#         for group in data["uris"]:   # Each group is a list of image paths
+#             for uri in group:
+#                 image_paths.append(uri)
+
+#         # Take up to 4 images safely
+#         encoded_images = []
+#         for i, image_path in enumerate(image_paths[:4]):
+#             with open(image_path, "rb") as image_file:
+#                 image_data = image_file.read()
+#             encoded_images.append(base64.b64encode(image_data).decode("utf-8"))
+#             inputs[f"image_data_{i+1}"] = encoded_images[-1]
+
+#         # Return the actual number of image paths available
+#         return inputs, image_paths

@@ -1,0 +1,10 @@
+
+open-clip-torch
+langchain-community
+langchain-core
+langchain-openai
+langchain_google_genai
+SpeechRecognition 
+PyAudio 
+ 
+pydub

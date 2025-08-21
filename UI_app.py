@@ -240,17 +240,24 @@ def initialize_databases():
     chroma_client = chromadb.PersistentClient(path="./data/e_commerce.db")
     image_loader = ImageLoader()
     embedding_function = OpenCLIPEmbeddingFunction()
-    chroma_collection = chroma_client.get_or_create_collection(
-        "e_commerce_collection",
+
+    # Create separate collections for text and image embeddings
+    image_collection = chroma_client.get_or_create_collection(
+        "e_commerce_images",
         embedding_function=embedding_function,
         data_loader=image_loader,
     )
 
-    return mongo_collection, chroma_collection, dataset_folder
+    text_collection = chroma_client.get_or_create_collection(
+        "e_commerce_text",
+        embedding_function=embedding_function,
+    )
+
+    return mongo_collection, image_collection, text_collection, dataset_folder
 
 
 # Initialize connections
-mongo_collection, chroma_collection, dataset_folder = initialize_databases()
+mongo_collection, image_collection, text_collection, dataset_folder = initialize_databases()
 
 
 # Initialize audio transcriber in session state if not already there
@@ -355,41 +362,78 @@ def update_chromadb():
         except Exception as e:
             st.error(f"Error loading ChromaDB tracker: {e}")
 
-    # Get current count in collection
-    existing_count = chroma_collection.count()
+    # Get current counts
+    existing_img_count = image_collection.count()
+    existing_txt_count = text_collection.count()
 
-    # Prepare new images to add
-    new_ids = []
-    new_uris = []
+    # Prepare new data to add
+    new_img_ids, new_img_uris = [], []
+    new_txt_ids, new_txt_data, new_txt_metadata = [], [], []
     added_ids = []
+
+    # Get MongoDB documents for text data
+    mongo_docs = {str(doc['_id']): doc for doc in mongo_collection.find()}
 
     for filename in sorted(os.listdir(dataset_folder)):
         if filename.endswith((".jpg", ".png")) and not filename.startswith("."):
-            # Extract the MongoDB ID from the filename
+            # Extract MongoDB ID from filename
             mongo_id = filename.split("_")[0] if "_" in filename else filename.split(".")[0]
-
-            # Skip if already in ChromaDB
+            
+            # Skip if already processed
             if mongo_id in chromadb_ids:
                 continue
 
             file_path = os.path.join(dataset_folder, filename)
-            new_ids.append(mongo_id)
-            new_uris.append(file_path)
+            
+            # Add image embedding
+            new_img_ids.append(f"{mongo_id}_img")
+            new_img_uris.append(file_path)
+            
+            # Add text embedding if MongoDB document exists
+            if mongo_id in mongo_docs:
+                doc = mongo_docs[mongo_id]
+                text_content = f"{doc.get('title', '')} {doc.get('description', '')} {doc.get('category', '')}".strip()
+                
+                if text_content:
+                    new_txt_ids.append(f"{mongo_id}_txt")
+                    new_txt_data.append(text_content)
+                    new_txt_metadata.append({
+                        'mongo_id': mongo_id,
+                        'title': doc.get('title', ''),
+                        'description': doc.get('description', ''),
+                        'category': doc.get('category', ''),
+                        'type': 'text'
+                    })
+            
             added_ids.append(mongo_id)
 
-    # Only add if there are new images
-    if new_ids:
-        with st.spinner(f"Adding {len(new_ids)} new images to ChromaDB"):
-            chroma_collection.add(ids=new_ids, uris=new_uris)
+    # Add to ChromaDB collections
+    total_added = 0
+    if new_img_ids:
+        with st.spinner(f"Adding {len(new_img_ids)} images to ChromaDB"):
+            image_collection.add(
+                ids=new_img_ids, 
+                uris=new_img_uris,
+                metadatas=[{'mongo_id': id.split('_')[0], 'type': 'image'} for id in new_img_ids]
+            )
+        total_added += len(new_img_ids)
 
-        # Update our tracker with newly added IDs
+    if new_txt_ids:
+        with st.spinner(f"Adding {len(new_txt_ids)} text embeddings to ChromaDB"):
+            text_collection.add(
+                ids=new_txt_ids,
+                documents=new_txt_data,
+                metadatas=new_txt_metadata
+            )
+        total_added += len(new_txt_ids)
+
+    # Update tracker
+    if added_ids:
         chromadb_ids.update(added_ids)
         with open(chromadb_tracker, "w") as f:
             json.dump(list(chromadb_ids), f)
 
-        return len(new_ids), chroma_collection.count(), len(chromadb_ids)
-    else:
-        return 0, existing_count, len(chromadb_ids)
+    return total_added, image_collection.count(), text_collection.count(), len(chromadb_ids)
 
 
 # <<<------------------------------------------------------------------>>>
@@ -398,11 +442,72 @@ def update_chromadb():
 
 
 def query_db(query, results=4):
-    with st.spinner("Searching for relevant images..."):
-        results = chroma_collection.query(
-            query_texts=[query], n_results=results, include=["uris", "distances"]
+    with st.spinner("Searching for relevant images and text..."):
+        # Search in both collections
+        img_results = image_collection.query(
+            query_texts=[query], 
+            n_results=results, 
+            include=["uris", "distances", "metadatas"]
         )
-    return results
+        
+        txt_results = text_collection.query(
+            query_texts=[query], 
+            n_results=results, 
+            include=["documents", "distances", "metadatas"]
+        )
+        
+        # Combine and deduplicate results by mongo_id
+        combined_results = {}
+        
+        # Process image results
+        for i, (uri, distance, metadata) in enumerate(zip(
+            img_results["uris"][0], 
+            img_results["distances"][0], 
+            img_results["metadatas"][0]
+        )):
+            mongo_id = metadata['mongo_id']
+            if mongo_id not in combined_results or distance < combined_results[mongo_id]['distance']:
+                combined_results[mongo_id] = {
+                    'uri': uri,
+                    'distance': distance,
+                    'type': 'image',
+                    'metadata': metadata
+                }
+        
+        # Process text results
+        for i, (doc, distance, metadata) in enumerate(zip(
+            txt_results["documents"][0] if txt_results["documents"] else [],
+            txt_results["distances"][0], 
+            txt_results["metadatas"][0]
+        )):
+            mongo_id = metadata['mongo_id']
+            # Weight text results slightly lower (multiply by 1.1)
+            adjusted_distance = distance * 1.1
+            
+            if mongo_id not in combined_results or adjusted_distance < combined_results[mongo_id]['distance']:
+                # Need to find corresponding image URI
+                img_path = None
+                for filename in os.listdir(dataset_folder):
+                    if filename.startswith(mongo_id) and filename.endswith(('.jpg', '.png')):
+                        img_path = os.path.join(dataset_folder, filename)
+                        break
+                
+                combined_results[mongo_id] = {
+                    'uri': img_path,
+                    'distance': adjusted_distance,
+                    'type': 'text',
+                    'metadata': metadata,
+                    'document': doc
+                }
+        
+        # Sort by distance and convert back to expected format
+        sorted_results = sorted(combined_results.values(), key=lambda x: x['distance'])[:results]
+        
+        return {
+            "uris": [[r['uri'] for r in sorted_results if r['uri']]],
+            "distances": [[r['distance'] for r in sorted_results if r['uri']]],
+            "metadatas": [[r['metadata'] for r in sorted_results if r['uri']]]
+        }
 
 
 # <<<------------------------------------------------------------------>>>
@@ -581,12 +686,13 @@ with st.sidebar:
             st.info(f"Total images in dataset: {total_count}")
 
         with st.spinner("Updating ChromaDB..."):
-            new_added, total_chroma, total_tracked = update_chromadb()
-            if new_added > 0:
-                st.success(f"Added {new_added} new images to ChromaDB")
+            total_added, img_count, txt_count, total_tracked = update_chromadb()
+            if total_added > 0:
+                st.success(f"Added {total_added} new embeddings to ChromaDB")
             else:
-                st.info("No new images to add to ChromaDB")
-            st.info(f"Total images in ChromaDB: {total_chroma}")
+                st.info("No new data to add to ChromaDB")
+            st.info(f"Images in ChromaDB: {img_count}")
+            st.info(f"Text entries in ChromaDB: {txt_count}")
 
     # Show system information
     st.markdown("### System Information")
@@ -645,7 +751,7 @@ if search_button and query:
         st.markdown("<h2 class='sub-header'>Relevant Stamps</h2>", unsafe_allow_html=True)
 
         # Create a grid layout for displaying multiple images
-        cols = st.columns(min(4, len(image_paths)))  # up to 4 images per row
+        cols = st.columns(min(4, max(1, len(image_paths))))  # up to 4 images per row, minimum 1
 
         for i, path in enumerate(image_paths):
             with cols[i % 4]:  # distribute images across columns
